@@ -124,9 +124,69 @@ Nobody ever waits. Best for data where "a few seconds old" is acceptable.
 
 ---
 
+## "What if 1 million requests hit at once?"
+
+Yes — request #1 takes the lock and rebuilds the cache. But the other 999,999 **do not sit in a queue**. That's the key correction.
+
+```
+1,000,000 requests
+       ↓
+     Redis
+       ↓
+   Cache MISS
+       ↓
+ ┌─────────────────────┐
+ │ Request #1          │
+ │ acquires lock       │──► DB ──► Cache SET ──► Release lock
+ └─────────────────────┘
+                                        ↓
+   Request #2 ──┐                 Other requests
+   Request #3 ──┤ lock exists →   retry → Cache HIT ✅
+   Request #4 ──┘ wait / retry
+```
+
+**You do NOT want 1M requests actively waiting on one Redis lock.** That just moves the pileup from the DB to Redis. Each of those 999,999 requests is still holding a connection, a thread, a socket.
+
+**What the other requests should actually do:**
+
+| Strategy | Other requests do | Cost |
+|---|---|---|
+| **Distributed lock** | Wait / short sleep + retry | Requests are held up |
+| **Stale-while-revalidate** | Get the **old** value instantly | Slightly stale data |
+| **Single-flight / coalescing** | **Share** request #1's result | Only works within one server process |
+
+### The real answer for 1M concurrent
+
+**Single-flight + stale-while-revalidate together** — not a Redis lock that 1M requests fight over.
+
+```
+Cache expired
+     ↓
+Serve stale value immediately  ← 999,999 requests get this
+     +
+One request refreshes in background  ← this one goes to DB
+```
+
+**Nobody waits. Nobody blocks. The DB gets exactly 1 query.**
+
+💡 **Why "single-flight" first:** it collapses requests **inside each app server** (in-process, zero network calls). With 100 servers, 1M requests become **100** DB attempts before Redis is even involved. *Then* the distributed lock cuts those 100 down to 1.
+
+```
+1,000,000 requests
+   → single-flight per server  → 100 requests   (in-memory, free)
+   → distributed lock in Redis →   1 request    (one network hop)
+   → DB                        →   1 query ✅
+```
+
+Two layers, cheapest one first.
+
+---
+
 ## Interview answer (say this)
 
 > Use **single-flight / distributed locking** so only one request recomputes a missing value, while the other requests either wait or serve stale data. Add **TTL jitter** so keys don't all expire at the same instant. For very hot keys, refresh **before** expiry in the background so the cache is never empty.
+>
+> At very high concurrency I'd avoid making a million requests contend on one Redis lock — I'd **coalesce in-process first** (single-flight per server), then use the distributed lock, and **serve stale data** to everyone else so nobody blocks.
 
 ---
 
