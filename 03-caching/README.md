@@ -9,7 +9,7 @@
 |---|----------|------|----------|--------|
 | 21 | Design a distributed Redis caching layer for a high-traffic application. | [21-distributed-redis-layer.md](21-distributed-redis-layer.md) | — | not-started |
 | 22 | Your API receives 1 million requests/minute for the same resource. How would you prevent database overload? | [22-hot-resource-1m-rpm.md](22-hot-resource-1m-rpm.md) | — | not-started |
-| 23 | Design cache invalidation for frequently changing product prices. | [23-cache-invalidation-prices.md](23-cache-invalidation-prices.md) | — | not-started |
+| 23 | Design cache invalidation for frequently changing product prices. | [23-cache-invalidation-prices.md](23-cache-invalidation-prices.md) | — | ✅ drafted |
 | 24 | How would you prevent cache stampede? | [24-cache-stampede.md](24-cache-stampede.md) | — | ✅ drafted |
 | 25 | Design a system using cache-aside, write-through, and write-behind caching. | [25-caching-strategies.md](25-caching-strategies.md) | — | not-started |
 | 26 | Redis suddenly goes down. How should your application behave? | [26-redis-outage-behavior.md](26-redis-outage-behavior.md) | — | not-started |
