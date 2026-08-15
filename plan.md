@@ -182,7 +182,7 @@ These recur across sections; note each occurrence rather than re-deriving it.
 
 | Section | Questions | Drafted | Reviewed | Mastered |
 |---------|-----------|---------|----------|----------|
-| 01 Core HLD — Architecture & Scalability | 10 | 0 | 0 | 0 |
+| 01 Core HLD — Architecture & Scalability | 10 | 1 | 0 | 0 |
 | 02 Database & Data Modeling | 10 | 0 | 0 | 0 |
 | 03 Caching | 10 | 0 | 0 | 0 |
 | 04 Queues, Workers & Async | 10 | 0 | 0 | 0 |
@@ -192,4 +192,4 @@ These recur across sections; note each occurrence rather than re-deriving it.
 | 08 Social Media & Real-Time | 10 | 0 | 0 | 0 |
 | 09 LLD / Object-Oriented Design | 10 | 0 | 0 | 0 |
 | 10 Advanced LLD + Production | 10 | 0 | 0 | 0 |
-| **Total** | **100** | **0** | **0** | **0** |
+| **Total** | **100** | **1** | **0** | **0** |

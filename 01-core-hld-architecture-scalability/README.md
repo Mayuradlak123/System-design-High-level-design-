@@ -7,7 +7,7 @@
 
 | # | Question | File | Priority | Status |
 |---|----------|------|----------|--------|
-| 1 | Design a URL shortener like Bitly. How would you generate unique short URLs at scale? | [01-url-shortener.md](01-url-shortener.md) | **TOP 15** | not-started |
+| 1 | Design a URL shortener like Bitly. How would you generate unique short URLs at scale? | [01-url-shortener.md](01-url-shortener.md) | **TOP 15** | ✅ drafted |
 | 2 | Design a rate limiter for an API used by millions of users. | [02-api-rate-limiter.md](02-api-rate-limiter.md) | **TOP 15** | not-started |
 | 3 | Design an API Gateway for multiple microservices. | [03-api-gateway.md](03-api-gateway.md) | — | not-started |
 | 4 | Design a distributed configuration management service. | [04-distributed-config-service.md](04-distributed-config-service.md) | — | not-started |
