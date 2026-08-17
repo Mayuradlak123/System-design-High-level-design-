@@ -1,8 +1,7 @@
 # Q1 — Design a URL Shortener like Bitly
 
-**Section:** Core HLD — Architecture & Scalability | **Track:** HLD | **Priority:** **TOP 15**
-**Status:** `drafted`
-**Reference implementation:** [SnipURL](https://github.com/Mayuradlak123/URL-shortner-system-design) — Flask + MongoDB + Redis
+**Track:** HLD | **Priority:** **TOP 15** | **Status:** `drafted`
+**Reference:** [SnipURL](https://github.com/Mayuradlak123/URL-shortner-system-design) — Flask + MongoDB + Redis
 
 ---
 
@@ -17,198 +16,137 @@ POST /shorten                         GET /abc1234
 random 7-char code               1. Redis cache?  ──hit──► 302 ✅
    │                                     │ miss
    ▼                                     ▼
-Bloom filter: seen before?       2. Bloom says "never seen"? ──► 404 ✅
-   │ maybe          │ no                 │ maybe exists
-   ▼                │                    ▼
-check MongoDB       │                3. MongoDB ──► cache it ──► 302 ✅
-   │ collision      │
-   └──► retry       ▼
-              insert into MongoDB
-                    │
-                    ▼
-          add to Bloom + cache
+Bloom: seen before?              2. Bloom "never seen"? ──► 404 ✅
+   │ maybe        │ no                   │ maybe exists
+   ▼              │                      ▼
+check MongoDB     │                  3. MongoDB ──► cache it ──► 302 ✅
+   │ collision    │
+   └──► retry     ▼
+            insert into MongoDB → add to Bloom + cache
 ```
 
-**One line:** short code → look up long URL → 302 redirect. Everything else is making that lookup cheap.
+**One line:** short code → long URL lookup → 302. Baaki sab us lookup ko sasta banane ke liye hai.
 
----
+## 1–4. Requirements & Scale
 
-## 1. Functional Requirements
-
-- Shorten a long URL → get a short link
-- Open short link → redirect to original
-- Track clicks (analytics)
-- Show a user their recent links
-
-**Out of scope:** custom aliases, expiry dates, user accounts.
-
-## 2. Non-Functional Requirements
-
-| Need | Target |
+| | |
 |---|---|
-| Redirect latency | < 50 ms |
-| Availability | 99.9% (a dead link = a dead business) |
-| Read:write ratio | ~100:1 (heavily read-dominated) |
-| Consistency | Eventual is fine — a link 1 sec late is OK |
+| **Functional** | Shorten, redirect, click tracking, user's recent links |
+| **Out of scope** | Custom aliases, expiry, user accounts |
+| **Non-functional** | < 50 ms redirect, 99.9% uptime, eventual consistency OK |
+| **QPS** | 100M writes/day ≈ **1,150/sec** · reads 100× ≈ **115k/sec** (peak 230k) |
+| **Data** | URLs ~18 TB/year · visits 10B/day → **must expire (TTL 90d)** |
 
-**Key insight:** reads dominate → optimize the read path, everything else can be slow.
-
-## 3. Traffic / QPS
-
-```
-100M new URLs/day  →  100M / 86400  ≈ 1,150 writes/sec
-10B redirects/day  →  reads = 100 × writes ≈ 115,000 reads/sec
-Peak = 2× average  →  ~230,000 reads/sec
-```
-
-## 4. Data Volume
-
-| Item | Size | Per year |
-|---|---|---|
-| 1 URL row (~500 B) | 100M/day | ~18 TB/year |
-| 1 visit row (~200 B) | 10B/day | huge → **must expire** |
-
-👉 Fix: **TTL index on visits (90 days)**. Without it, analytics data eats the whole disk.
-*(`app/__init__.py` — `expireAfterSeconds`)*
+👉 **Key insight:** reads dominate 100:1 → read path optimize karo, baaki sab slow chal sakta hai.
 
 ## 5. APIs
 
 ```http
-POST /api/v1/data/shorten
-  { "longUrl": "https://example.com/very/long" }
+POST /api/v1/data/shorten   { "longUrl": "https://..." }
   → 201 { "shortUrl": "https://sni.pt/abc1234" }
 
-GET /abc1234
-  → 302 Location: https://example.com/very/long
+GET /abc1234  → 302 Location: https://...
 ```
 
-Redirect uses **302 (temporary)**, not 301 — a 301 is cached by the browser forever, so you'd never see the click again. **302 = you keep your analytics.**
+⚠️ **302, not 301.** 301 browser mein forever cache hota hai → click dobara dikhega hi nahi. **302 = analytics bachi rehti hai.**
 
-## 6. Database Schema
+## 6. Schema
 
-**`urls`**
-| Field | Index |
-|---|---|
-| `short_code` | **unique** ← the safety net for collisions |
-| `long_url` | — |
-| `user_ip` | compound with `created_at` (for history) |
-| `created_at` | |
+**`urls`** — `short_code` (**unique index**), `long_url`, `user_ip`, `created_at`
+→ compound index `(user_ip, created_at)` for history
 
-**`visits`**
-| Field | Index |
-|---|---|
-| `short_code` + `visited_at` | for per-link analytics |
-| `visited_at` | **TTL 90 days** |
+**`visits`** — `short_code`, `ip`, `user_agent`, `visited_at`
+→ index `(short_code, visited_at)` + **TTL 90 days** on `visited_at`
+
+TTL zaroori hai: 10M redirects/day = ~2 GB/day = **~730 GB/year** warna.
 
 ## 7. SQL or NoSQL?
 
-**NoSQL (MongoDB).** Why:
-- Access pattern is a single key lookup: `short_code → long_url`. No joins needed.
-- Needs easy horizontal sharding by `short_code`.
-- Schema barely changes.
-
-*SQL would work fine too — the deciding factor is sharding ease, not the data itself.*
+**NoSQL (MongoDB).** Access pattern ek single key lookup hai (`short_code → long_url`), koi join nahi, schema barely changes, aur `short_code` se sharding easy. *SQL bhi chal jaata — deciding factor sharding ease hai, data nahi.*
 
 ## 8. Caching
 
-| What | Where | TTL |
-|---|---|---|
-| `short_code → long_url` | Redis | 24 h |
+`short_code → long_url` in Redis, **TTL 24 h**, cache-aside.
 
-- Mappings are **immutable** → cache invalidation is a non-problem. Huge win.
-- Cache-aside: miss → read DB → write cache.
-- Redis policy = `volatile-lru` so **only TTL'd keys get evicted** — the Bloom bitset and visit queue must never be evicted.
+💡 **Mappings immutable hain** → cache invalidation ki problem hi nahi. Huge win.
+
+Redis policy `volatile-lru` — sirf TTL'd keys evict ho, kyunki Bloom bitset aur visit queue **kabhi** evict nahi hone chahiye.
 
 ## 9. Queues & Workers
 
-Analytics must never slow a redirect down.
+Analytics redirect ko slow nahi kar sakti.
 
 ```
 redirect → RPUSH visit to Redis list → return 302   (~2 Redis ops, 0 DB writes)
-                    │
-background worker ──┴─► pops 500 → one bulk insert into MongoDB
+                     ↓
+   background worker pops 500 → ek bulk insert
 ```
-*(`app/services/visit_service.py`)*
 
-## 10. What happens when things fail?
+## 10. Failure modes
 
 | Failure | Behaviour |
 |---|---|
-| **Redis down** | Cache miss → read MongoDB. Slower, still correct. ✅ |
-| **Bloom unavailable** | Returns "maybe exists" → falls through to DB. **Fails safe.** ✅ |
-| **MongoDB primary dies** | Replica set elects new primary, driver follows automatically ✅ |
-| **Bulk insert fails** | Visits pushed back to head of the Redis queue, retried ✅ |
-| **Worker killed mid-batch** | That batch of clicks is lost — acceptable for analytics ⚠️ |
+| Redis down | Cache miss → MongoDB. Slow, par correct ✅ |
+| Bloom unavailable | "maybe exists" → DB pe fall through. **Fails safe** ✅ |
+| MongoDB primary dead | Replica set election, driver follow karta hai ✅ |
+| Bulk insert fail | Visits queue ke head pe wapas, retry ✅ |
+| Worker killed mid-batch | Us batch ke clicks lost — analytics ke liye acceptable ⚠️ |
 
-**Rule used everywhere: degrade, don't break.** A slow redirect beats a broken one.
+👉 **Rule: degrade, don't break.** Slow redirect >> broken redirect.
 
 ## 11. Concurrency & Idempotency
 
-**Problem:** two requests generate the same random code at the same time.
+**Problem:** do requests same random code generate kar de.
 
-**Three layers of defence:**
-1. Keyspace is huge → 62⁷ ≈ 3.5 trillion. At 10M URLs, ~14 collisions *total*.
-2. Bloom filter catches "probably taken" without touching the DB.
-3. **Unique index on `short_code`** — the real guarantee. The DB rejects the duplicate; retry.
+**Teen layer:**
+1. Keyspace huge — 62⁷ ≈ **3.5 trillion**. 10M URLs pe ~14 collisions *total*.
+2. Bloom filter "probably taken" DB touch kiye bina pakadta hai
+3. **Unique index on `short_code`** — DB duplicate reject karta hai, retry karo
 
-👉 The first two are *optimizations*. Only #3 is *correctness*.
+👉 Pehle do **optimization** hain. Sirf #3 **correctness** hai.
 
-## 12. Horizontal Scaling
+## 12. Scaling
 
-- **App tier is stateless** → add servers behind a load balancer freely.
-- **MongoDB:** shard by `short_code` (random → even spread, no hot shard).
-- **Redis:** cluster, sharded by key.
-- **Reads:** add replicas — reads scale independently of writes.
+- App tier **stateless** → load balancer ke peeche servers add karo
+- MongoDB: shard by `short_code` (random → even spread, no hot shard)
+- Redis cluster, key se sharded
+- Reads: replicas add karo — reads writes se independent scale karti hain
 
 ---
 
-## Why a Bloom filter? (the interesting bit)
+## Bloom filter kyun? (the interesting bit)
 
-A scanner hitting random codes (`/aaaaaa1`, `/aaaaaa2`, …) would miss the cache **every time** and hammer MongoDB with useless queries.
+Scanner random codes maar raha hai (`/aaaaaa1`, `/aaaaaa2`…) → **har baar** cache miss → MongoDB pe useless queries ki barsaat.
 
-A Bloom filter is a tiny bitset that answers **"have I definitely never seen this?"**
+Bloom filter ek chhota bitset hai jo batata hai: **"ye maine kabhi dekha hi nahi?"**
 
-| Answer | Trust it? |
+| Answer | Trust? |
 |---|---|
-| "Definitely not present" | ✅ 100% reliable → return 404 instantly, no DB hit |
-| "Maybe present" | ❌ could be a false positive → check DB |
+| "Definitely not present" | ✅ 100% reliable → instant 404, no DB hit |
+| "Maybe present" | ❌ false positive ho sakta → DB check karo |
 
-**12.5 MB of Redis holds ~10M codes.** It absorbs the entire attack.
+**12.5 MB Redis mein ~10M codes.** Poora attack absorb kar leta hai.
 
-⚠️ **The catch:** a "definitely absent" answer is only safe once the filter contains *every* existing code. So the filter is seeded from the DB at startup, and the check stays **switched off** until seeding completes. Otherwise you'd 404 real, live URLs.
+⚠️ **Catch:** "definitely absent" tabhi safe hai jab filter mein **saare** existing codes ho. Isliye startup pe DB se seed hota hai, aur seeding poori hone tak check **band** rehta hai — warna live URLs pe 404 aa jaayega.
 
----
-
-## Trade-offs I made
+## Trade-offs
 
 | Decision | Chose | Instead of | Why |
 |---|---|---|---|
-| Code generation | Random + check | Counter + Base62 | Unguessable; but costs 1 read per write |
-| Redirect status | 302 | 301 | Keeps analytics |
-| Click tracking | Async queue | Inline DB write | Redirect stays fast |
-| Visit retention | 90-day TTL | Keep forever | Would grow ~730 GB/year |
+| Code generation | Random + check | Counter + Base62 | Unguessable; par 1 read per write |
+| Redirect | 302 | 301 | Analytics bachti hai |
+| Click tracking | Async queue | Inline DB write | Redirect fast rehta hai |
+| Visit retention | 90-day TTL | Forever | ~730 GB/year warna |
 
-**Better for scale:** counter + **Feistel permutation** → no uniqueness read at all, codes still look random.
+**Better for scale:** counter + **Feistel permutation** → uniqueness read hi nahi, aur codes random dikhte hain.
 
----
+## Follow-ups
 
-## Follow-ups to expect
+| Question | Answer |
+|---|---|
+| Custom aliases? | Separate path, unique index still guards it |
+| Malicious links? | Scheme validate karo (`javascript:` block), Safe Browsing check |
+| Real-time analytics? | Redis list ki jagah Kafka + stream processor |
+| Same URL do baar? | `long_url` index karo, existing code return — product decision hai |
 
-1. *"How do you handle custom aliases?"* → separate path, still guarded by the unique index.
-2. *"How do you stop malicious links?"* → validate scheme (block `javascript:`), check Safe Browsing.
-3. *"Analytics in real time?"* → Kafka + stream processor instead of a Redis list.
-4. *"Same URL shortened twice?"* → index `long_url` and return the existing code (a product decision, not a technical one).
-
-## Known gaps in the current implementation
-
-1. `long_url` isn't validated → open-redirect / phishing risk
-2. `X-Forwarded-For` is trusted → history is spoofable
-3. Visit queue has no size cap → grows unbounded if Mongo stalls
-
----
-
-## Self-Review
-- [x] Answered all 12 checklist points
-- [x] Numbers estimated, not hand-waved
-- [x] Stated consistency model explicitly
-- [x] Named what I would NOT build (custom aliases, accounts, expiry)
+**Known gaps:** `long_url` validate nahi hota (open-redirect risk) · `X-Forwarded-For` trusted (history spoofable) · visit queue pe size cap nahi.
